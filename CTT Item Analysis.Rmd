@@ -1,0 +1,203 @@
+---
+title: "Classical Test Theory (CTT) Item Analysis in R: using 'psych' package"
+output: html_document
+---
+
+
+*Federico Ferrero*
+
+---
+
+## 1. Purpose of this tutorial
+
+This presentation simulates a realistic multiple-choice test, conduct a Classical Test Theory (CTT) item analysis, and interpret item-level and test-level statistics using R. The workflow mirrors what is typically done in operational assessment and evaluation contexts.
+
+---
+
+## 2. Setup
+Clearing the workspace prevents interference from existing objects. The psych package is commonly used for CTT analyses, and setting a seed ensures reproducible results.
+```{r}
+# Clean workspace
+rm(list = ls())
+
+# Load required library
+library(psych)
+
+# Reproducibility
+set.seed(123)
+
+```
+
+## 3. Simulation parameters
+Two hundred examinees and fifteen items approximate a typical pilot or short operational test. Each item has four options beins A the correct one. The latent ability variable (theta) is used only to generate realistic response behavior; in CTT, ability is not directly observed.
+```{r}
+n_persons <- 200     # Number of test takers
+n_items   <- 15      # Number of test items
+
+options <- c("A", "B", "C", "D")
+correct_key <- rep("A", n_items)
+
+# Simulated latent ability (not observed in practice)
+theta <- rnorm(n_persons, mean = 0, sd = 1)
+```
+
+## 4. Simulating a multiple-choice item
+This function generates item responses such that higher-ability students are more likely to answer correctly, while lower-ability students choose among distractors.Distractors are intentionally uneven to reflect realistic misconception patterns. Although the simulation is inspired by IRT, the analysis remains purely CTT-based.
+```{r}
+simulate_item <- function(theta, a_range = c(1.0, 1.5), b_range = c(-1, 1)) {
+  sapply(theta, function(t) {
+    a <- runif(1, a_range[1], a_range[2])  # discrimination
+    b <- runif(1, b_range[1], b_range[2])  # difficulty
+    
+    # Probability of a correct response
+    p <- 1 / (1 + exp(-a * (t - b)))
+    correct <- rbinom(1, 1, prob = p)
+    
+    if (correct == 1) {
+      "A"
+    } else {
+      distractors <- options[options != "A"]
+      probs <- c(0.5, 0.3, 0.2)  # Unequal distractor attractiveness
+      sample(distractors, 1, prob = probs)
+    }
+  })
+}
+```
+
+## 5. Generating the test: Item 5 as problematic one
+Item 5 is deliberately constructed to be easier and less discriminating. This allows us to demonstrate how CTT and distractor analyses help identify items that require revision.
+```{r}
+mc_data <- sapply(1:n_items, function(i) {
+  if (i == 5) {
+    # Intentionally weaker item
+    simulate_item(theta,
+                  a_range = c(0.6, 0.9),
+                  b_range = c(-1.5, -0.5))
+  } else {
+    simulate_item(theta)
+  }
+})
+
+mc_data <- as.data.frame(mc_data)
+colnames(mc_data) <- paste0("Item_", 1:n_items)
+
+```
+
+The table below shows the first five columns of the multiple-choice response dataset (mc_data): it contains raw multiple-choice responses (A–D).
+```{r, echo=FALSE, results='asis'}
+knitr::kable(head(mc_data, 5), caption = "First 5 rows of the simulated test data")
+```
+
+## 6. Scoring the test
+Under CTT assumptions, responses are dichotomously scored: 1 for correct and 0 for incorrect. No modeling or partial credit is used.
+```{r}
+scored_data <- as.data.frame(
+  sapply(mc_data, function(x) as.numeric(x == "A"))
+)
+```
+
+The table below shows the first five columns of the corresponding scored dataset (scored_data). This step is used to verify data structure and alignment before conducting Classical Test Theory (CTT) item analysis.One row, one student. One column per item. 0 or 1 scoring. No missing data rate per item.
+```{r, echo=FALSE, results='asis'}
+knitr::kable(head(scored_data, 5), caption = "First 5 rows of the scored test data")
+```
+
+
+## 7. Reliability and item statistics
+
+```{r}
+alpha_results <- alpha(scored_data)
+
+item_difficulty     <- colMeans(scored_data)
+item_discrimination <- alpha_results$item.stats$r.drop
+alpha_if_deleted    <- alpha_results$alpha.drop$raw_alpha
+```
+
+| Statistic                  | Definition / Description                                        | Interpretation / Notes                                      |
+|----------------------------|-----------------------------------------------------------------|------------------------------------------------------------|
+| Item difficulty (p-value)  | Proportion of students who answered correctly                  | < .20 → too hard<br>.30–.70 → desirable<br>> .80 → too easy |
+| Item discrimination  (point biserial) (r.drop)| Correlation between item score and total test score (excluding itself) | < .20 → weak<br>.30–.39 → acceptable<br>≥ .40 → strong    |
+| Cronbach’s alpha            | Internal consistency of the test                                 | Sensitive to number of items and item quality             |
+| Alpha if item deleted       | Would reliability improve if this item were removed?           | —                                                          |
+
+
+## 8. CTT summary table
+
+```{r}
+ctt_summary <- data.frame(
+  Item = colnames(scored_data),
+  Difficulty = round(item_difficulty, 2),
+  Discrimination = round(item_discrimination, 2),
+  Alpha_if_deleted = round(alpha_if_deleted, 2)
+)
+
+print(ctt_summary)
+cat("Overall Cronbach's alpha:",
+    round(alpha_results$total$raw_alpha, 2))
+
+```
+
+**Analysis**
+
++ **Overall Cronbach’s alpha** = 0.77, which is acceptable reliability for a short 15-item test.
+
++ **Item difficulty**: Values range from 0.45 to 0.60, which is well within the desirable range (.30–.70). This means most items are neither too hard nor too easy.
+
++ **Item Discrimination (r.drop)**: Most items have discrimination between 0.30–0.45, which is acceptable to strong. Item 5 has 0.25, which is noticeably lower than the others.
+
++ **Alpha if item deleted**: Values range from 0.75 to 0.77, very close to the overall alpha (0.77). Removing any single item would not substantially improve reliability.
+
+Overall: The test is well-constructed with good internal consistency.
+
+Item 5 is weaker in discrimination and slightly easier, so it could be reviewed or revised.
+
+All other items are functioning well, contributing positively to reliability.
+
+## 9. Distractor analysis (Item 5)
+
+**Functional distractor**
+
++ Chosen by a reasonable proportion (≈5–30%)
+
++ Mean total score below the correct option
+
+**Non-functional distractor**
+
++ Rarely chosen (<5–10%)
+
++ Chosen almost exclusively by very low scorers
+```{r}
+item5 <- mc_data$Item_5
+total_score <- rowSums(scored_data)
+
+# Option frequencies
+prop.table(table(item5))
+```
+
++ A (correct answer): 60.5% – This is a reasonable proportion, so the item is moderately easy.
+
++ B: 18.5%, C: 13.5%, D: 7.5% – These are the distractors.
+
++ B and C are functioning distractors, chosen by a fair number of students.
+
++ D is a non-functional distractor, rarely chosen (<10%).
+
+```{r}
+# Mean total score by option
+
+aggregate(total_score,
+          by = list(Option = item5),
+          mean)
+```
++ A (correct answer): 8.66 – Students who answered correctly had the highest total scores, as expected.
+
++ B and C: Students choosing these distractors scored moderately lower (6.27, 6.04), indicating these distractors attract mid-level students.
+
++ D: Students choosing this distractor had the lowest scores (4.67), confirming it is non-functional; only the lowest-scoring students select it.
+
+```{r}
+boxplot(total_score ~ item5,
+        xlab = "Response Option",
+        ylab = "Total Test Score",
+        main = "Distractor Analysis – Item 5",
+        col = c("lightblue","pink","lightgreen","yellow"))
+```
