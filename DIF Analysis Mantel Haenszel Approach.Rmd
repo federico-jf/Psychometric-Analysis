@@ -1,0 +1,465 @@
+---
+title: "DIF Analysis in R: Mantel–Haenszel Approach"
+output: html_document
+---
+
+
+*Federico Ferrero*
+
+---
+
+### 1. Introduction
+
+Before administering a test, we often ask: **Does it work equally well across different groups, or is it biased?** For example, some items might favor students based on **gender**, **ethnicity**, or **language background**. This tutorial extends a basic Classical Test Theory (CTT) item analysis by introducing Differential Item Functioning (DIF) analysis using the Mantel–Haenszel (MH) method. The goal is to detect items that function differently across groups after conditioning on total test score. Item 5 will be artificially manipulated to demonstrate DIF. We are moving from classical item analysis to DIF detection because some items might favor one group over another even if overall ability is the same. MH DIF is a widely used method to detect this bias.
+
+---
+
+### 2. Setup
+Clearing the workspace prevents interference from existing objects. The psych package is commonly used for CTT analyses, and difR is a package specialized in DIF analysis.
+```{r message = FALSE, warning=FALSE}
+# Clean workspace
+rm(list = ls())
+
+# Load required libraries
+library(psych)
+library(difR)
+
+
+# Reproducibility
+set.seed(123) # ensures the same random numbers are generated each time, so results are reproducible.
+
+```
+
+### 3. Simulation parameters
+Two hundred examinees and fifteen items approximate a typical pilot or short operational test. Each item has four options beins A the correct one. The latent ability variable (theta) is used only to generate realistic response behavior; in CTT, ability is not directly observed.
+```{r}
+n_persons <- 200     # Number of test takers
+n_items   <- 15      # Number of test items
+
+options <- c("A", "B", "C", "D")
+correct_key <- rep("A", n_items)
+
+# Simulated latent ability (not observed in practice)
+theta <- rnorm(n_persons, mean = 0, sd = 1)
+```
+
+### 4. Simulating a multiple-choice item
+This function simulates responses to a multiple-choice item using a simple IRT-like logistic model: a (discrimination) and b (difficulty) determine the probability of answering correctly. If incorrect, a distractor is chosen with specified probabilities. This creates realistic variation in responses.
+```{r}
+simulate_item <- function(theta, a_range = c(1.0, 1.5), b_range = c(-1, 1)) {
+sapply(theta, function(t) {
+a <- runif(1, a_range[1], a_range[2])
+b <- runif(1, b_range[1], b_range[2])
+p <- 1 / (1 + exp(-a*(t-b)))
+correct <- rbinom(1,1,prob=p)
+
+if(correct == 1){
+  "A"
+} else {
+  distractors <- options[options != "A"]
+  probs <- c(0.5,0.3,0.2)
+  sample(distractors,1,prob=probs)
+}
+
+})
+}
+```
+
+### 5. Creating a grouping variable
+We create two groups (reference and focal) to simulate a situation where DIF might occur. Random assignment ensures roughly equal group sizes, allowing comparison across groups.
+
+In real-world DIF analysis, the grouping variable is usually a meaningful demographic or categorical characteristic that we suspect might cause bias. Common examples include:
+
++ Gender (male vs. female)
+
++ Ethnicity (e.g., White vs. non-White, or specific ethnic groups)
+
++ Language background (English learners vs. native speakers)
+
++ Socioeconomic status (high vs. low SES)
+
++ Disability status (with vs. without accommodations)
+
+The **reference group** is typically the group assumed not to be disadvantaged (often the majority or historically favored group), and the **focal group** is the one potentially disadvantaged.
+
+In short, in real data we  don’t randomly assign groups: we must use existing group membership that may interact with test items.
+```{r}
+# Binary group variable (0 = reference, 1 = focal)
+group <- rbinom(n_persons, 1, 0.5)
+table(group)
+```
+
+### 6. Generating the test (Item 5 as DIF item)
+We generate most items normally but manipulate Item 5 so the focal group has a very low probability of answering correctly, creating DIF. This illustrates how MH can detect biased items.
+```{r}
+# Generate items 1-4 and 6-15 normally
+
+mc_data <- sapply(1:n_items, function(i){
+if(i != 5){
+simulate_item(theta)
+} else {
+rep(NA, n_persons) # placeholder for Item 5
+}
+})
+mc_data <- as.data.frame(mc_data)
+colnames(mc_data) <- paste0("Item_",1:n_items)
+
+# Generate Item 5 with DIF: focal group has lower probability
+
+item5_responses <- sapply(1:n_persons, function(j){
+if(group[j]==1){
+correct <- rbinom(1,1,prob=0.1)
+} else {
+a <- runif(1,1.0,1.5)
+b <- runif(1,-1,1)
+p <- 1/(1+exp(-a*(theta[j]-b)))
+correct <- rbinom(1,1,prob=p)
+}
+if(correct==1) "A" else sample(c("B","C","D"),1,prob=c(0.5,0.3,0.2))
+})
+mc_data$Item_5 <- item5_responses
+
+# Show first 5 rows
+
+knitr::kable(head(mc_data,5), caption="First 5 rows of simulated test data")
+
+```
+
+
+### 7. Scoring the test
+We convert responses to 0/1 (incorrect/correct), the format required for MH analysis.
+```{r}
+scored_data <- as.data.frame(
+sapply(mc_data, function(x) as.numeric(x=="A"))
+)
+
+# First 5 rows of scored data
+
+knitr::kable(head(scored_data,5), caption="First 5 rows of scored test data")
+
+```
+
+### 8. Total score as matching variable
+The total score approximates overall ability and is used to condition MH DIF comparisons. It ensures we compare examinees with similar proficiency across groups.
+```{r}
+total_score <- rowSums(scored_data)
+summary(total_score)
+```
+
+
+### 9. Mantel–Haenszel DIF analysis
+difMH() performs the Mantel–Haenszel test, detecting items with different odds of being answered correctly across groups after controlling for total score. purify = FALSE means we do not iteratively remove DIF items when computing the matching variable.
+```{r}
+mh_results <- difMH(
+Data = scored_data,
+group = group,
+focal.name = 1,
+purify = FALSE
+)
+```
+
+### 10. Inspecting DIF results
+This outputs MH statistics, p-values, and items flagged for DIF. It helps identify which items may disadvantage a particular group.
+```{r}
+summary(mh_results)
+```
+
+### 11. Items flagged for DIF
+Returns indices of items detected as DIF. These are the items needing further review or potential revision. In our case, items 5 and 6!
+```{r}
+mh_results$DIFitems
+```
+
+### 12. Results by item 
+We classify DIF items according to ETS guidelines (A = negligible, B = moderate, C = large) based on MH delta. This gives a clear, interpretable summary of which items are biased and to what degree.
+```{r}
+# DIF items
+dif_items <- mh_results$DIFitems
+item_names <- colnames(scored_data)[dif_items]
+
+# MH common language effect size (delta)
+MH_delta <- mh_results$MH  # sometimes mh_results$delta
+
+# Function to assign ETS classification based on delta
+ETS_class <- function(delta){
+  if(abs(delta) < 1) {
+    "A"  # negligible
+  } else if(abs(delta) < 1.5) {
+    "B"  # moderate
+  } else {
+    "C"  # large
+  }
+}
+
+# Apply only to DIF items
+ETS_dif <- sapply(MH_delta[dif_items], ETS_class)
+
+# Create summary table
+mh_dif_summary <- data.frame(
+  Item = item_names,
+  MH_statistic = MH_delta[dif_items],
+  p_value = mh_results$p.value[dif_items],
+  ETS_classification = ETS_dif
+)
+
+knitr::kable(mh_dif_summary, caption = "Metrics for DIF Items (5 and 6) with ETS classification")
+```
+
+### Interpretation
+
++ **Item**: the item number or name.
+
++ **MH_statistic**: Mantel-Haenszel chi-square value; higher values indicate stronger DIF.
+
++ **p_value**: statistical significance for DIF (usually <0.05)
+
++ **ETS_classification**: In the ETS (Educational Testing Service) guidelines for Mantel–Haenszel DIF, the classification is based on the MH delta statistic (log-odds transformation):
+
+| ETS Class | |ΔMH| (absolute MH delta) | Interpretation |
+|-----------|------------------------|----------------|
+| A | < 1 | Negligible DIF |
+| B | 1 – 1.5 | Moderate DIF |
+| C | > 1.5 | Large DIF |
+
+Item 5 → high MH_statistic, low p-value, large DIF, confirming it has DIF.
+
+Item 6 → high delta value (C) but smaller MH_statistic, likely due to random variation.
+
+
+
+### 12. Visualize DIF for items 5 and 6
+Visualization shows how probability of correct responses differs across groups at each total score. Item 5 clearly favors the reference group, confirming DIF. Plotting helps communicate DIF effects intuitively.
+```{r message = FALSE, warning=FALSE}
+
+library(ggplot2)
+
+# Add total score and group to scored data
+scored_data$Total <- rowSums(scored_data)
+scored_data$Group <- factor(group, labels = c("Reference", "Focal"))
+
+# Function to compute proportion correct by total score
+get_prop_correct <- function(item){
+  aggregate(scored_data[[item]], 
+            by = list(Total = scored_data$Total, Group = scored_data$Group), 
+            FUN = mean)
+}
+
+# Prepare data for Items 5 and 6
+prop_item5 <- get_prop_correct("Item_5")
+prop_item5$Item <- "Item_5"
+
+prop_item6 <- get_prop_correct("Item_6")
+prop_item6$Item <- "Item_6"
+
+plot_data <- rbind(prop_item5, prop_item6)
+colnames(plot_data)[3] <- "Proportion"
+
+# Plot
+ggplot(plot_data, aes(x = Total, y = Proportion, color = Group)) +
+  geom_point() +
+  geom_line() +
+  facet_wrap(~Item) +
+  labs(title = "DIF Visualization: Items 5 and 6",
+       x = "Total Test Score",
+       y = "Proportion Correct") +
+  theme_minimal()
+```
+
+
+Item 5 shows real DIF!
+
+
+## Final application example: Gender-based DIF (men advantaged)
+In this example, the grouping variable is gender. We simulate a test where men and women have similar overall ability, but one item favors men, creating DIF. This mirrors real assessment concerns, where item wording, context, or content may advantage one gender despite equal proficiency.
+
+```{r ECHO = FALSE, message = FALSE, warning=FALSE}
+set.seed(456)
+
+n_persons <- 300
+n_items <- 15
+
+# Gender: 0 = Women (reference), 1 = Men (focal)
+gender <- rbinom(n_persons, 1, 0.5)
+
+theta <- rnorm(n_persons, mean = 0, sd = 1)
+
+options <- c("A", "B", "C", "D")
+
+simulate_item <- function(theta) {
+  sapply(theta, function(t) {
+    a <- runif(1, 1.0, 1.5)
+    b <- runif(1, -1, 1)
+    p <- 1 / (1 + exp(-a * (t - b)))
+    correct <- rbinom(1, 1, p)
+
+    if (correct == 1) {
+      "A"
+    } else {
+      sample(c("B","C","D"), 1, prob = c(0.5, 0.3, 0.2))
+    }
+  })
+}
+
+# 🔹 CREATE THE DATASET FIRST
+mc_gender <- sapply(1:n_items, function(i) {
+  simulate_item(theta)
+})
+
+mc_gender <- as.data.frame(mc_gender)
+colnames(mc_gender) <- paste0("Item_", 1:n_items)
+
+# 🔹 Inject gender DIF in Item 8
+item8_responses <- sapply(1:n_persons, function(j) {
+  if (gender[j] == 1) {
+    correct <- rbinom(1, 1, prob = 0.65)
+  } else {
+    correct <- rbinom(1, 1, prob = 0.35)
+  }
+
+  if (correct == 1) "A" else sample(c("B","C","D"), 1)
+})
+
+mc_gender$Item_8 <- item8_responses
+
+# Add gender as an observed variable
+mc_gender$Gender <- factor(
+  gender,
+  levels = c(0, 1),
+  labels = c("Women", "Men")
+)
+
+
+# Show first 5 rows
+knitr::kable(
+  head(mc_gender, 5),
+  caption = "First 5 rows of simulated test data (Gender DIF example)"
+)
+
+```
+
+```{r ECHO = FALSE, message = FALSE, warning=FALSE}
+# Score only the first 15 columns (the items)
+scored_gender <- as.data.frame(
+  sapply(mc_gender[, 1:15], function(x) as.numeric(x == "A"))
+)
+
+# Add Gender as a separate column for display
+scored_gender$Gender <- mc_gender$Gender
+
+# Show the first 5 rows
+knitr::kable(
+  head(scored_gender, 5),
+  caption = "First 5 rows of scored test data with Gender"
+)
+```
+
+Let's run the analysis...
+```{r, message = FALSE, warning=FALSE}
+# Run MH DIF on numeric items only
+mh_results <- difMH(
+  Data = scored_gender[, 1:15],  # only the 15 numeric items
+  group = gender,                # 0 = Women, 1 = Men
+  focal.name = 1,
+  purify = FALSE
+)
+```
+
+```{r}
+summary(mh_results)
+mh_results$DIFitems
+```
+
+```{r}
+# DIF items
+dif_items <- mh_results$DIFitems
+item_names <- colnames(scored_data)[dif_items]
+
+# MH common language effect size (delta)
+MH_delta <- mh_results$MH  # sometimes mh_results$delta
+
+# Function to assign ETS classification based on delta
+ETS_class <- function(delta){
+  if(abs(delta) < 1) {
+    "A"  # negligible
+  } else if(abs(delta) < 1.5) {
+    "B"  # moderate
+  } else {
+    "C"  # large
+  }
+}
+
+# Apply only to DIF items
+ETS_dif <- sapply(MH_delta[dif_items], ETS_class)
+
+# Create summary table
+mh_dif_summary <- data.frame(
+  Item = item_names,
+  MH_statistic = MH_delta[dif_items],
+  p_value = mh_results$p.value[dif_items],
+  ETS_classification = ETS_dif
+)
+
+knitr::kable(mh_dif_summary, caption = "Metrics for DIF Items (8, 9, and 14) with ETS classification")
+```
+
+### Interpretation
+
++ **Item**: the item number or name.
+
++ **MH_statistic**: Mantel-Haenszel chi-square value; higher values indicate stronger DIF.
+
++ **p_value**: statistical significance for DIF (usually <0.05)
+
++ **ETS_classification**: In the ETS (Educational Testing Service) guidelines for Mantel–Haenszel DIF, the classification is based on the MH delta statistic (log-odds transformation):
+
+| ETS Class | |ΔMH| (absolute MH delta) | Interpretation |
+|-----------|------------------------|----------------|
+| A | < 1 | Negligible DIF |
+| B | 1 – 1.5 | Moderate DIF |
+| C | > 1.5 | Large DIF |
+
+
++ Item 8
+
+    + MH_statistic = 20.52, p < 0.00001, ETS Class = C (Large DIF)
+
+    + This item strongly favors men over women. The very high chi-square and extremely low p-value indicate a statistically significant difference in the probability of answering correctly, even after conditioning on total test score.
+    
+**Overall**: All three items are classified as large DIF (C) according to ETS guidelines. This indicates that these items are biased and function differently for men and women, even among test-takers with the same total score. These items should be reviewed, revised, or removed to ensure the test is fair and does not advantage one gender over the other.
+
+Finally, let's check the DIF visually:
+```{r}
+
+library(ggplot2)
+
+# Add total score to scored data
+scored_gender$Total <- rowSums(scored_gender[, 1:15])  # sum only numeric items
+scored_gender$Group <- scored_gender$Gender             # use Gender for DIF visualization
+
+# Function to compute proportion correct by total score
+get_prop_correct <- function(item){
+  aggregate(scored_gender[[item]], 
+            by = list(Total = scored_gender$Total, Group = scored_gender$Group), 
+            FUN = mean)
+}
+
+# Prepare data for Items 8, 9, and 14
+prop_item8 <- get_prop_correct("Item_8"); prop_item8$Item <- "Item_8"
+prop_item9 <- get_prop_correct("Item_9"); prop_item9$Item <- "Item_9"
+prop_item14 <- get_prop_correct("Item_14"); prop_item14$Item <- "Item_14"
+
+# Combine data
+plot_data <- rbind(prop_item8, prop_item9, prop_item14)
+colnames(plot_data)[3] <- "Proportion"
+
+# Plot
+ggplot(plot_data, aes(x = Total, y = Proportion, color = Group)) +
+  geom_point() +
+  geom_line() +
+  facet_wrap(~Item) +
+  labs(title = "DIF Visualization: Items 8, 9, and 14",
+       x = "Total Test Score",
+       y = "Proportion Correct") +
+  theme_minimal()
+
+```
