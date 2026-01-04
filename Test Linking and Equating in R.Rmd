@@ -1,0 +1,173 @@
+---
+title: "Linking and Equating Test Forms with IRT: A data2pl Example"
+output: html_document
+---
+*Federico Ferrero*
+
+### 1. Introduction
+
+**How can we guarantee that scores from different forms of the same test are truly comparable?** Conceptually, linking and equating are essential in assessments to ensure fairness: without them, a score of 80 on Form A may not mean the same as 80 on Form B. In high-stakes testing, decisions like promotion, placement, or certification depend on comparable scores. IRT-based linking is particularly powerful because it accounts for item difficulty and discrimination, not just raw scores.
+
+This tutorial demonstrates how to link and equate two test forms using Item Response Theory (IRT). We use real item response data from the equateIRT package (data2pl), which follows a common-item nonequivalent groups design, providing a realistic scenario for operational linking procedures.
+
+Note: In this tutorial, we first perform **linking** by computing the relationship between the two forms’ theta scales (using Stocking-Lord coefficients). Then we perform **equating**, applying this transformation so that scores on Form B can be interpreted on Form A’s scale — making them interchangeable.
+
+---
+
+### 2. Case
+
+We have two test forms that share some items (anchor items), but the students taking Form A are different from those taking Form B. If groups differ, raw scores cannot be directly compared. However, we know that the common items act as a bridge to align the scales of both forms.
+
+The goal is to ensure **score comparability** across forms. Design choice: **Common-item nonequivalent groups**.
+
+---
+
+### 3. Load dataset and libraries
+data2pl is a list of 5 data frames, each representing a test form with dichotomous item responses (0 = incorrect, 1 = correct). Each form has 20 items and 5000 examinees.
+```{r, warning=FALSE, message=FALSE}
+# Clean workspace
+rm(list = ls())
+
+# Load required libraries for linking and IRT modeling.
+library(equateIRT)
+library(mirt)
+
+# Load data2pl from equateIRT
+data("data2pl", package = "equateIRT")
+
+# Inspect our datasets structure
+str(data2pl)
+```
+
+### 4. Select two forms
+We choose two forms to link (Form A and Form B). The first 10 items are shared anchor items, which are crucial for aligning the scales. Only shared items can be used to equate scales across non-equivalent groups. Selecting forms is the first operational step in linking.
+```{r}
+# Extract the first two test forms
+formA <- data2pl[[1]]
+formB <- data2pl[[2]]
+
+# Confirm the number of examinees and items
+dim(formA)
+dim(formB)
+```
+
+### 5. Fit IRT models to each form
+We model each item’s properties using the 2-parameter logistic (2PL) IRT model. Each item has a difficulty (how hard it is) and a discrimination (how well it differentiates students at different ability levels).Linking relies on item parameters, not just raw scores, to ensure fair score interpretation.
+```{r}
+# Fits the 2PL model to Form A
+modA <- mirt(formA, 1, itemtype = "2PL", verbose = FALSE)
+# Fits the 2PL model to Form B
+modB <- mirt(formB, 1, itemtype = "2PL", verbose = FALSE)
+
+```
+
+### 6. Organize IRT results for equating
+Equating functions require the IRT models to be in a structured format. We combine both models into a single object. Without organizing models, the linking functions cannot compute coefficients correctly.
+```{r}
+# Collects the models into a list
+mods <- list(modA, modB)
+# Labels them for clarity
+names(mods) <- c("FormA", "FormB")
+# Creates the object ready for linking
+mod_list <- equateIRT::modIRT(est.mods = mods, names = names(mods), display = FALSE)
+```
+
+### 7. Compute direct equating coefficients
+Linking coefficients allow us to transform the theta scale of Form B to match Form A. Stocking-Lord is a common method for this. Theta scales from different forms are not directly comparable without this transformation.
+```{r}
+# Compute direct equating coefficients (mean-sigma, Haebara, Stocking-Lord, etc.)
+direct_eq <- equateIRT::direc(
+mods = mod_list,
+which = c("FormA", "FormB"),
+method = "Stocking-Lord"
+)
+
+direct_eq
+summary(direct_eq)
+```
+
+### 8. Extract equating coefficients
+We extract the slope (A) and intercept (B) of the linear transformation that maps Form B’s theta to Form A’s scale. These coefficients are applied when transforming Form B scores to the common scale, ensuring score comparability.
+```{r}
+# extracts the linking coefficients
+eq_coeff <- equateIRT::eqc(direct_eq)
+# Shows the values of A (slope) and B (intercept)
+eq_coeff
+```
+
+### Equating: transformation
+Once we have calculated the coefficients (the linking step), we apply a transformation called equating, which puts each theta from Form B on Form A’s scale so the scores are directly comparable. Conceptually, Linking estimates the transformation coefficients between forms, and equating applies them so scores are directly comparable.
+
+The Stocking-Lord linking coefficients for Form B to Form A are:
+
+  + **𝐴 = 1.211**
+
+  + **𝐵 = − 0.146**
+
+We use the formula to transform Form B theta values onto Form A’s scale:
+
+  + θB,equated = A*θB + B
+  
+  + θB,equated = 1.211*θB - 0.146
+
+These two coefficient indicate:
+  + **Slope** (A = 1.211): Form B’s theta scale is slightly narrower than Form A’s. Multiplying by 1.211 stretches the scale so the ability range matches Form A.
+
+  + **Intercept** (B = -0.146): Form B’s scores are slightly higher on average. Subtracting 0.146 shifts the scale so the two forms are centered together.
+  
+In practical terms:
+
+  + A student with *θB* = 0 (average on Form B) becomes *θB,equated* = −0.146 on Form A’s scale.
+  
+  + A student with *θB* = 1 (average on Form B) becomes *θB,equated* = 1.065 on Form A’s scale.
+  
+*This allows us to transform scores from Form B to their equivalents on Form A.*
+
+### 9. Evaluate linking quality
+We compare Test Characteristic Curves (TCCs) to see if expected test scores are aligned across forms after linking. TCCs show the relationship between latent ability (theta) and expected scores. If linking works well, the curves **should overlap**, indicating comparable scores across forms.
+```{r}
+# Define theta grid
+theta_grid <- seq(-4, 4, length.out = 100)
+
+# Compute expected test scores for Form A
+expected_A <- rowSums(probtrace(modA, Theta = matrix(theta_grid, ncol = 1)))
+
+# Transform theta for Form B using Stocking-Lord coefficients
+theta_B_equated <- eq_coeff$A * theta_grid + eq_coeff$B
+
+# Compute expected test scores for Form B at equated theta
+expected_B_equated <- rowSums(probtrace(modB, Theta = matrix(theta_B_equated, ncol = 1)))
+
+# Plot TCCs
+plot(theta_grid, expected_A, type = "l", col = "blue", lwd = 3, lty = 2,
+     xlab = expression(theta), ylab = "Expected Test Score",
+     main = "TCC for Form A and Equated Form B")
+lines(theta_grid, expected_B_equated, col = "red", lwd = 2)
+legend("topleft", legend = c("Form A", "Form B (Equated)"), col = c("blue", "red"), lwd = 2)
+```
+
+### Interpretation of the TCC Plot
+
+**What we usually expect:**
+
+  + A Test Characteristic Curve (TCC) shows the expected test score for each ability level (𝜃)
+
+  + For a well-functioning test, the TCC increases with ability: students with higher𝜃are more likely to answer items correctly, resulting in higher expected total scores.
+
+  + When comparing two forms after equating, you typically see two smooth, rising curves (Form A and Form B equated) that lie close together if the linking worked well.
+
+**Why we see flat yuxtaposed lines in our plot:**
+
+  + In this example, Form A in data2pl[[1]] has all or nearly all items answered correctly by the simulated examinees.
+    
+  + As a result, the expected test score is constant across all ability levels, producing a horizontal line in the plot.
+
+  + This does not indicate a problem with the equating procedure. Instead, it reflects the nature of the dataset: the test is “too easy,” and item responses do not vary with ability.
+
+**In conclusion:**
+
+  + In general, TCCs illustrate how test scores relate to ability.
+  
+  + A flat TCC highlights that a test with no variation in item difficulty or discrimination cannot differentiate examinees, and the expected score is the same for all ability levels.
+  
+  + The Stocking-Lord coefficients and the equating process still work correctly, even if one form’s TCC appears flat.
